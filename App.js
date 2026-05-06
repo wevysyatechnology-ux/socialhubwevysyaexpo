@@ -6,15 +6,20 @@ import Constants from 'expo-constants';
 import {
   SafeAreaView,
   BackHandler,
-  ActivityIndicator,
   View,
   StyleSheet,
   Image,
   Text,
   Animated,
   Easing,
+  Share,
+  Alert,
+  Linking
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
+import * as MediaLibrary from 'expo-media-library';
 
 // WebView is only available on native; web uses an iframe
 let WebView = null;
@@ -66,16 +71,362 @@ async function registerForPushNotificationsAsync() {
       Constants?.expoConfig?.extra?.eas?.projectId ??
       Constants?.easConfig?.projectId;
 
-    const tokenResponse = await Notifications.getExpoPushTokenAsync(
+    const expoTokenResponse = await Notifications.getExpoPushTokenAsync(
       projectId ? { projectId } : undefined
     );
 
-    return tokenResponse.data;
+    // On Android this is an FCM registration token, which is required
+    // when sending directly via Firebase Cloud Messaging v1.
+    const deviceTokenResponse = await Notifications.getDevicePushTokenAsync();
+
+    return {
+      expoPushToken: expoTokenResponse?.data ?? null,
+      devicePushToken: deviceTokenResponse?.data ?? null,
+      devicePushTokenType: deviceTokenResponse?.type ?? null,
+    };
   } catch (error) {
-    console.log('Failed to fetch Expo push token:', error);
+    console.log('Failed to fetch push tokens:', error);
     return null;
   }
 }
+
+const injectedJavaScript = `
+  (function() {
+    // ── Web Share API shim ────────────────────────────────────────────
+    if (window.navigator) {
+      // canShare() stub — lets feature-detection in the web app succeed
+      window.navigator.canShare = function() { return true; };
+
+      window.navigator.share = async function(data) {
+        try {
+          if (data.files && data.files.length > 0) {
+            var file = data.files[0];
+            var reader = new FileReader();
+            reader.onloadend = function() {
+              window.ReactNativeWebView.postMessage(JSON.stringify({
+                type: 'SHARE',
+                payload: {
+                  base64: reader.result,
+                  mimeType: file.type,
+                  title: data.title || '',
+                  text: data.text || ''
+                }
+              }));
+            };
+            reader.readAsDataURL(file);
+            return Promise.resolve();
+          } else {
+            window.ReactNativeWebView.postMessage(JSON.stringify({
+              type: 'SHARE',
+              payload: data
+            }));
+            return Promise.resolve();
+          }
+        } catch (err) {
+          console.error('Share interception error', err);
+          return Promise.reject(err);
+        }
+      };
+    }
+
+    // ── Track Blob/File URLs so we can resolve them synchronously ─────
+    var _blobMap = {};
+    var _origCreateObjectURL = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = function(obj) {
+      var url = _origCreateObjectURL(obj);
+      if (obj instanceof Blob || obj instanceof File) {
+        var r = new FileReader();
+        r.onloadend = function() {
+          _blobMap[url] = {
+            base64: r.result,
+            type: obj.type || 'application/octet-stream',
+            name: (obj instanceof File) ? obj.name : ''
+          };
+        };
+        r.readAsDataURL(obj);
+      }
+      return url;
+    };
+
+    // ── Shared download dispatcher ────────────────────────────────────
+    function dispatchDownload(href, filename) {
+      if (!href) return;
+      filename = filename || 'download.png';
+
+      if (href.startsWith('data:')) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({
+          type: 'DOWNLOAD',
+          payload: { url: href, filename: filename }
+        }));
+        return;
+      }
+
+      if (href.startsWith('blob:')) {
+        if (_blobMap[href]) {
+          var info = _blobMap[href];
+          var ext = info.type ? info.type.split('/')[1] : 'png';
+          var fname = (filename && filename !== 'download.png')
+            ? filename
+            : (info.name || ('download.' + ext));
+          window.ReactNativeWebView.postMessage(JSON.stringify({
+            type: 'DOWNLOAD',
+            payload: { url: info.base64, filename: fname }
+          }));
+        } else {
+          fetch(href)
+            .then(function(res) { return res.blob(); })
+            .then(function(blob) {
+              var r = new FileReader();
+              r.onloadend = function() {
+                window.ReactNativeWebView.postMessage(JSON.stringify({
+                  type: 'DOWNLOAD',
+                  payload: { url: r.result, filename: filename }
+                }));
+              };
+              r.readAsDataURL(blob);
+            });
+        }
+        return;
+      }
+
+      if (href.startsWith('http://') || href.startsWith('https://')) {
+        // Try in-WebView fetch first so same-site auth cookies are included.
+        fetch(href, { credentials: 'include' })
+          .then(function(res) { return res.blob(); })
+          .then(function(blob) {
+            var r = new FileReader();
+            r.onloadend = function() {
+              window.ReactNativeWebView.postMessage(JSON.stringify({
+                type: 'DOWNLOAD',
+                payload: { url: r.result, filename: filename }
+              }));
+            };
+            r.readAsDataURL(blob);
+          })
+          .catch(function() {
+            // Fallback for public URLs.
+            window.ReactNativeWebView.postMessage(JSON.stringify({
+              type: 'DOWNLOAD',
+              payload: { url: href, filename: filename }
+            }));
+          });
+        return;
+      }
+
+      // Regular URL — pass through to native downloader
+      var payload = { url: href, filename: filename };
+      if (href.startsWith('http://') || href.startsWith('https://')) {
+        payload.headers = {
+          Cookie: document.cookie || ''
+        };
+      }
+
+      window.ReactNativeWebView.postMessage(JSON.stringify({
+        type: 'DOWNLOAD',
+        payload: payload
+      }));
+    }
+
+    function getElementVisualSource(el) {
+      if (!el) return '';
+
+      if (el.tagName === 'IMG') {
+        return el.currentSrc || el.src || el.getAttribute('src') || '';
+      }
+
+      if (el.tagName === 'CANVAS') {
+        try {
+          return el.toDataURL('image/png');
+        } catch (e) {
+          return '';
+        }
+      }
+
+      var style = window.getComputedStyle(el);
+      if (!style) return '';
+      var bg = style.backgroundImage || '';
+      if (bg.indexOf('url(') === -1) return '';
+
+      var m = bg.match(/url\((['"]?)(.*?)\\1\)/);
+      return m && m[2] ? m[2] : '';
+    }
+
+    function findBestFlyerElement() {
+      var visuals = Array.prototype.slice.call(document.querySelectorAll('img, canvas, [style*="background-image"]'));
+      if (!visuals.length) return null;
+
+      var viewportHeight = window.innerHeight || 0;
+      var best = null;
+      var bestScore = -1;
+
+      visuals.forEach(function(el) {
+        var src = getElementVisualSource(el);
+        if (!src) return;
+
+        var rect = el.getBoundingClientRect();
+        if (!rect || rect.width < 60 || rect.height < 60) return;
+
+        var area = rect.width * rect.height;
+        var verticalFocus = 1;
+        if (viewportHeight > 0) {
+          var centerY = rect.top + rect.height / 2;
+          var distanceFromCenter = Math.abs((viewportHeight / 2) - centerY);
+          verticalFocus = Math.max(0.2, 1 - (distanceFromCenter / viewportHeight));
+        }
+
+        var score = area * verticalFocus;
+        if (score > bestScore) {
+          best = el;
+          bestScore = score;
+        }
+      });
+
+      return best;
+    }
+
+    function extractDataUrlFromBlobUrl(blobUrl) {
+      return fetch(blobUrl)
+        .then(function(res) { return res.blob(); })
+        .then(function(blob) {
+          return new Promise(function(resolve, reject) {
+            var reader = new FileReader();
+            reader.onloadend = function() { resolve(reader.result); };
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+        });
+    }
+
+    function dispatchSharePayload(payload) {
+      window.ReactNativeWebView.postMessage(JSON.stringify({
+        type: 'SHARE',
+        payload: payload
+      }));
+    }
+
+    function dispatchShareFromImage(src) {
+      if (!src) return;
+
+      if (src.startsWith('data:')) {
+        dispatchSharePayload({
+          base64: src,
+          title: 'Share Flyer',
+          text: ''
+        });
+        return;
+      }
+
+      if (src.startsWith('blob:')) {
+        extractDataUrlFromBlobUrl(src)
+          .then(function(dataUrl) {
+            dispatchSharePayload({
+              base64: dataUrl,
+              title: 'Share Flyer',
+              text: ''
+            });
+          })
+          .catch(function() {
+            dispatchSharePayload({
+              url: window.location.href,
+              title: 'Share Flyer',
+              text: ''
+            });
+          });
+        return;
+      }
+
+      dispatchSharePayload({
+        url: src,
+        title: 'Share Flyer',
+        text: ''
+      });
+    }
+
+    // ── Intercept user clicks on <a download> ─────────────────────────
+    // We do NOT intercept generic button clicks here — the website's own
+    // click handlers must run so they can generate the blob/data URL for
+    // the final rendered flyer. Our anchor.click() shim below catches it.
+    document.addEventListener('click', function(event) {
+      var target = event.target && event.target.closest && event.target.closest('a');
+      if (target && target.hasAttribute('download')) {
+        event.preventDefault();
+        // Let site handlers complete (some builders reset zoom/state after click).
+        // We only block browser navigation and trigger native download asynchronously.
+        setTimeout(function() {
+          dispatchDownload(target.getAttribute('href'), target.getAttribute('download') || 'download.png');
+        }, 0);
+      }
+    }, true);
+
+    // ── Intercept programmatic .click() on <a download> ──────────────
+    // Flyer builders commonly do: link.href = blobUrl; link.click()
+    // on a detached element — that never reaches the event listener above.
+    var _origAnchorClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function() {
+      if (this.hasAttribute('download')) {
+        var href = this.getAttribute('href');
+        var name = this.getAttribute('download') || 'download.png';
+        setTimeout(function() {
+          dispatchDownload(href, name);
+        }, 0);
+        return;
+      }
+      _origAnchorClick.call(this);
+    };
+
+    var _longPressTimer = null;
+    var _longPressFired = false;
+
+    function clearLongPress() {
+      if (_longPressTimer) {
+        clearTimeout(_longPressTimer);
+        _longPressTimer = null;
+      }
+    }
+
+    document.addEventListener('touchstart', function(event) {
+      var touchedVisual = event.target && event.target.closest && event.target.closest('img, canvas, [style*="background-image"]');
+      if (!touchedVisual) {
+        clearLongPress();
+        return;
+      }
+
+      _longPressFired = false;
+      clearLongPress();
+      _longPressTimer = setTimeout(function() {
+        _longPressFired = true;
+        var src = getElementVisualSource(touchedVisual) || getElementVisualSource(findBestFlyerElement());
+        if (src) {
+          dispatchDownload(src, 'flyer.png');
+        }
+      }, 650);
+    }, true);
+
+    document.addEventListener('contextmenu', function(event) {
+      var visual = event.target && event.target.closest && event.target.closest('img, canvas, [style*="background-image"]');
+      if (!visual) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.stopImmediatePropagation) {
+        event.stopImmediatePropagation();
+      }
+
+      var src = getElementVisualSource(visual) || getElementVisualSource(findBestFlyerElement());
+      if (src) {
+        dispatchDownload(src, 'flyer.png');
+      }
+    }, true);
+
+    document.addEventListener('touchmove', clearLongPress, true);
+    document.addEventListener('touchcancel', clearLongPress, true);
+    document.addEventListener('touchend', function() {
+      clearLongPress();
+    }, true);
+  })();
+
+  true;
+`;
 
 export default function App() {
   const webViewRef = useRef(null);
@@ -85,6 +436,294 @@ export default function App() {
   const shimmerTranslate = useRef(new Animated.Value(-180)).current;
   const splashOpacity = useRef(new Animated.Value(1)).current;
   const [showSplash, setShowSplash] = useState(true);
+
+  const canOpenOutsideWebView = (url) => {
+    if (!url || typeof url !== 'string') {
+      return false;
+    }
+
+    // Only allow explicit deep-link style schemes to open outside.
+    return (
+      url.startsWith('mailto:') ||
+      url.startsWith('tel:') ||
+      url.startsWith('sms:') ||
+      url.startsWith('whatsapp://') ||
+      url.startsWith('intent://') ||
+      url.startsWith('market://')
+    );
+  };
+
+  const isShareCancelledError = (error) => {
+    const msg = String(error?.message || '').toLowerCase();
+    return msg.includes('cancel') || msg.includes('dismiss');
+  };
+
+  const guessMimeTypeFromFilename = (filename) => {
+    const lower = String(filename || '').toLowerCase();
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    if (lower.endsWith('.gif')) return 'image/gif';
+    if (lower.endsWith('.pdf')) return 'application/pdf';
+    if (lower.endsWith('.zip')) return 'application/zip';
+    return 'image/png';
+  };
+
+  const getFilenameFromUrl = (url, fallback = 'download.png') => {
+    try {
+      const parsed = new URL(url);
+      const fromQuery = parsed.searchParams.get('filename') || parsed.searchParams.get('file');
+      if (fromQuery) {
+        return fromQuery;
+      }
+
+      const pathname = parsed.pathname || '';
+      const tail = pathname.split('/').filter(Boolean).pop();
+      return tail || fallback;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const looksLikeDirectDownloadUrl = (url) => {
+    if (!url || typeof url !== 'string') {
+      return false;
+    }
+
+    try {
+      const parsed = new URL(url);
+      const pathname = (parsed.pathname || '').toLowerCase();
+      const search = (parsed.search || '').toLowerCase();
+      if (/\.(png|jpe?g|webp|gif|pdf|zip)$/.test(pathname)) {
+        return true;
+      }
+      return search.includes('download=') || search.includes('filename=');
+    } catch {
+      return false;
+    }
+  };
+
+  const saveHttpFileToDevice = async (url, preferredFilename) => {
+    const filename = preferredFilename || getFilenameFromUrl(url, 'download.png');
+    const fileUri = FileSystem.cacheDirectory + filename;
+    const mimeType = guessMimeTypeFromFilename(filename);
+
+    try {
+      const downloadRes = await FileSystem.downloadAsync(url, fileUri);
+      const downloadedUri = downloadRes.uri;
+
+      let permStatus = 'undetermined';
+      try {
+        const perm = await MediaLibrary.requestPermissionsAsync(false);
+        permStatus = perm?.status || 'undetermined';
+      } catch (permError) {
+        console.log('Media permission request failed', permError);
+      }
+
+      if (permStatus === 'granted') {
+        try {
+          const asset = await MediaLibrary.createAssetAsync(downloadedUri);
+          const existingAlbum = await MediaLibrary.getAlbumAsync('WeVysya');
+          if (existingAlbum) {
+            await MediaLibrary.addAssetsToAlbumAsync([asset], existingAlbum, false);
+          } else {
+            await MediaLibrary.createAlbumAsync('WeVysya', asset, false);
+          }
+          Alert.alert('Saved!', 'Flyer saved to your gallery.');
+          return;
+        } catch (saveError) {
+          console.log('Gallery save failed, falling back to share sheet', saveError);
+        }
+      }
+
+      if (await Sharing.isAvailableAsync()) {
+        try {
+          await Sharing.shareAsync(downloadedUri, {
+            dialogTitle: 'Save flyer',
+            mimeType,
+            UTI: 'public.image',
+          });
+        } catch (shareError) {
+          if (!isShareCancelledError(shareError)) {
+            throw shareError;
+          }
+        }
+      } else {
+        Alert.alert('Error', 'Could not save the flyer. Please grant Photos permission in device Settings and try again.');
+      }
+    } catch (downloadError) {
+      console.log('Direct URL download failed', downloadError);
+      Alert.alert('Download failed', 'Could not fetch the flyer. Please try again.');
+    }
+  };
+
+  const openExternallyOrShare = async (url) => {
+    if (!url || typeof url !== 'string') {
+      return false;
+    }
+
+    try {
+      // If WhatsApp links are blocked in web context, route through native.
+      const isWhatsAppUrl =
+        url.includes('wa.me/') ||
+        url.includes('api.whatsapp.com') ||
+        url.startsWith('whatsapp://');
+
+      if (isWhatsAppUrl) {
+        try {
+          const parsedUrl = new URL(url);
+          const textParam = parsedUrl.searchParams.get('text');
+
+          if (textParam) {
+            await Share.share({ message: decodeURIComponent(textParam) });
+            return true;
+          }
+        } catch (err) {
+          // Ignore parsing errors and fall back to opening the URL directly.
+        }
+      }
+
+      const canOpen = await Linking.canOpenURL(url);
+      if (canOpen) {
+        await Linking.openURL(url);
+        return true;
+      }
+    } catch (err) {
+      console.log('Failed to open external URL', err);
+    }
+
+    return false;
+  };
+
+  const handleWebViewMessage = async (event) => {
+    let data;
+    try {
+      data = JSON.parse(event.nativeEvent.data);
+    } catch (parseError) {
+      // Ignore non-JSON messages posted by the website or third-party scripts.
+      console.log('Ignoring non-JSON webview message');
+      return;
+    }
+
+    try {
+      if (data.type === 'SHARE') {
+        const { base64, url, text, title } = data.payload;
+        if (base64) {
+          const base64Data = base64.split(',')[1];
+          const mimeType = base64.split(';')[0].split(':')[1];
+          const extension = mimeType.split('/')[1] || 'png';
+          const fileUri = FileSystem.cacheDirectory + 'shared_flyer.' + extension;
+          
+          await FileSystem.writeAsStringAsync(fileUri, base64Data, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          
+          if (await Sharing.isAvailableAsync()) {
+            try {
+              await Sharing.shareAsync(fileUri, {
+                dialogTitle: title || 'Share Flyer',
+                mimeType: mimeType
+              });
+            } catch (shareError) {
+              if (!isShareCancelledError(shareError)) {
+                throw shareError;
+              }
+            }
+          } else {
+            Alert.alert('Error', 'Sharing is not available on this device');
+          }
+        } else {
+          await Share.share({
+            message: text ? (url ? `${text} ${url}` : text) : url,
+            title: title,
+          });
+        }
+      } else if (data.type === 'DOWNLOAD') {
+        const { url, filename: rawFilename, headers } = data.payload || {};
+        const filename = rawFilename || 'download.png';
+
+        // ── Step 1: Write file to cache ──────────────────────────────
+        let fileUri = '';
+        let mimeType = 'image/png';
+        if (url && url.startsWith('data:')) {
+          const base64Data = url.split(',')[1];
+          const mimeMatch = url.match(/^data:([^;]+);/);
+          mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
+          const extension = mimeType.split('/')[1] || 'png';
+          const actualFilename = filename.includes('.') ? filename : `${filename}.${extension}`;
+          fileUri = FileSystem.cacheDirectory + actualFilename;
+          await FileSystem.writeAsStringAsync(fileUri, base64Data, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+        } else if (url) {
+          // URL was not converted to data: in-browser (e.g. long-press on img src).
+          // Use legacy FileSystem.downloadAsync which is stable on this RN version.
+          fileUri = FileSystem.cacheDirectory + filename;
+          try {
+            const downloadRes = await FileSystem.downloadAsync(url, fileUri);
+            fileUri = downloadRes.uri;
+          } catch (downloadError) {
+            console.log('Direct download failed', downloadError);
+            // Surface helpful message so user knows the issue.
+            Alert.alert(
+              'Download failed',
+              'Could not fetch the flyer. Please use the Download button inside the flyer instead.'
+            );
+            return;
+          }
+        } else {
+          Alert.alert('Error', 'Could not download the flyer.');
+          return;
+        }
+
+        // ── Step 2: Request permission (correct API — no second arg) ─
+        let permStatus = 'undetermined';
+        try {
+          const perm = await MediaLibrary.requestPermissionsAsync(false);
+          permStatus = perm?.status || 'undetermined';
+        } catch (permError) {
+          console.log('Media permission request failed', permError);
+          // Permission API unavailable (Expo Go restriction) — fall through to share sheet
+        }
+
+        // ── Step 3: Save to gallery if permission granted ────────────
+        if (permStatus === 'granted') {
+          try {
+            const asset = await MediaLibrary.createAssetAsync(fileUri);
+            const existingAlbum = await MediaLibrary.getAlbumAsync('WeVysya');
+            if (existingAlbum) {
+              await MediaLibrary.addAssetsToAlbumAsync([asset], existingAlbum, false);
+            } else {
+              await MediaLibrary.createAlbumAsync('WeVysya', asset, false);
+            }
+            Alert.alert('Saved!', 'Flyer saved to your gallery.');
+            return;
+          } catch (saveError) {
+            console.log('Gallery save failed, falling back to share sheet', saveError);
+          }
+        }
+
+        // ── Step 4: Fallback — open native share/save sheet ──────────
+        if (await Sharing.isAvailableAsync()) {
+          try {
+            await Sharing.shareAsync(fileUri, {
+              dialogTitle: 'Save flyer',
+              mimeType,
+              UTI: 'public.image',
+            });
+          } catch (shareError) {
+            if (!isShareCancelledError(shareError)) {
+              throw shareError;
+            }
+          }
+        } else {
+          Alert.alert('Error', 'Could not save the flyer. Please grant Photos permission in device Settings and try again.');
+        }
+      }
+    } catch (e) {
+      console.log('Error handling webview message', e);
+      Alert.alert('Error', 'Could not complete this action. Please try again.');
+    }
+  };
 
   // Handle Android hardware back button
   useEffect(() => {
@@ -133,20 +772,53 @@ export default function App() {
       return undefined;
     }
 
-    registerForPushNotificationsAsync().then((token) => {
-      if (!token) {
+    registerForPushNotificationsAsync().then((tokens) => {
+      if (!tokens) {
         return;
       }
 
-      console.log('Expo Push Token:', token);
+      const {
+        expoPushToken,
+        devicePushToken,
+        devicePushTokenType,
+      } = tokens;
+
+      if (expoPushToken) {
+        console.log('Expo Push Token:', expoPushToken);
+      }
+
+      if (devicePushToken) {
+        console.log('Device Push Token:', devicePushTokenType, devicePushToken);
+      }
 
       if (webViewRef.current) {
-        webViewRef.current.postMessage(
-          JSON.stringify({
-            type: 'expoPushToken',
-            token,
-          })
-        );
+        if (expoPushToken) {
+          webViewRef.current.postMessage(
+            JSON.stringify({
+              type: 'expoPushToken',
+              token: expoPushToken,
+            })
+          );
+        }
+
+        if (devicePushToken) {
+          webViewRef.current.postMessage(
+            JSON.stringify({
+              type: 'devicePushToken',
+              token: devicePushToken,
+              tokenType: devicePushTokenType,
+            })
+          );
+
+          if (devicePushTokenType === 'fcm') {
+            webViewRef.current.postMessage(
+              JSON.stringify({
+                type: 'fcmToken',
+                token: devicePushToken,
+              })
+            );
+          }
+        }
       }
     });
 
@@ -216,18 +888,47 @@ export default function App() {
           javaScriptEnabled={true}
           domStorageEnabled={true}
           useWebKit={true}
+          setSupportMultipleWindows={false}
           originWhitelist={['https://*', 'http://*']}
           allowFileAccessFromFileURLs={false}
           allowUniversalAccessFromFileURLs={false}
+          onShouldStartLoadWithRequest={(request) => {
+            const reqUrl = request?.url;
+
+            if (!reqUrl || reqUrl === 'about:blank') {
+              return true;
+            }
+
+            // Block non-http content URLs from escaping the app.
+            if (
+              reqUrl.startsWith('blob:') ||
+              reqUrl.startsWith('data:') ||
+              reqUrl.startsWith('javascript:')
+            ) {
+              return false;
+            }
+
+            const isHttp = reqUrl.startsWith('http://') || reqUrl.startsWith('https://');
+            if (isHttp) {
+              if (looksLikeDirectDownloadUrl(reqUrl)) {
+                saveHttpFileToDevice(reqUrl, getFilenameFromUrl(reqUrl, 'download.png'));
+                return false;
+              }
+              return true;
+            }
+
+            if (canOpenOutsideWebView(reqUrl)) {
+              openExternallyOrShare(reqUrl);
+            } else {
+              console.log('Blocked unsupported navigation URL:', reqUrl);
+            }
+            return false;
+          }}
           onNavigationStateChange={(navState) => {
             canGoBackRef.current = navState.canGoBack;
           }}
-          startInLoadingState={true}
-          renderLoading={() => (
-            <View style={styles.loading}>
-              <ActivityIndicator size="large" color="#7fffd4" />
-            </View>
-          )}
+          injectedJavaScript={injectedJavaScript}
+          onMessage={handleWebViewMessage}
         />
       )}
       {showSplash ? (
@@ -243,7 +944,6 @@ export default function App() {
           </View>
 
           <View style={styles.splashContent}>
-            {/* Top section: logo + branding */}
             <View style={styles.topSection}>
               <View style={styles.logoWrap}>
                 <Image source={logo} style={styles.logo} resizeMode="contain" />
@@ -256,7 +956,6 @@ export default function App() {
               </View>
             </View>
 
-            {/* Bottom section: tagline + progress + footer */}
             <View style={styles.bottomSection}>
               <View style={styles.taglineBlock}>
                 <Text style={styles.taglineLine}>Stop Thinking 'i',</Text>
@@ -286,12 +985,6 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-  },
-  loading: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#0A1F1A',
   },
   splashOverlay: {
     ...StyleSheet.absoluteFillObject,
