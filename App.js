@@ -28,10 +28,8 @@ if (Platform.OS !== 'web') {
 }
 
 const TARGET_URL = 'https://socialhub.wevysya.com';
-// Replace with your machine's local IP (run `ipconfig` on Windows to find it)
-// e.g. 'http://192.168.1.100:8080/'
-// Android emulator can also use: 'http://10.0.2.2:8080/'
-//const TARGET_URL = 'http://192.168.1.102:8080/';
+// For local dev, comment the above and use your machine's IP:
+// const TARGET_URL = 'http://192.168.1.102:8080/';
 const logo = require('./assets/WeVysya Logo New Branding.png');
 
 Notifications.setNotificationHandler({
@@ -97,11 +95,15 @@ async function registerForPushNotificationsAsync() {
 const injectedJavaScript = `
   (function() {
     // ── Web Share API shim ────────────────────────────────────────────
+    // In standalone/preview builds the Android System WebView (Chrome-based)
+    // already has navigator.share on Navigator.prototype as a non-writable
+    // getter. Direct assignment silently fails, so canShare({files}) returns
+    // false and the web app falls through to the Supabase upload fallback
+    // (which triggers the "new row violates row-level security policy" error).
+    // Using Object.defineProperty on the navigator INSTANCE creates an own
+    // property that shadows the prototype's implementation in all WebView builds.
     if (window.navigator) {
-      // canShare() stub — lets feature-detection in the web app succeed
-      window.navigator.canShare = function() { return true; };
-
-      window.navigator.share = async function(data) {
+      var _rnShareImpl = async function(data) {
         try {
           if (data.files && data.files.length > 0) {
             var file = data.files[0];
@@ -111,10 +113,17 @@ const injectedJavaScript = `
                 type: 'SHARE',
                 payload: {
                   base64: reader.result,
-                  mimeType: file.type,
+                  mimeType: file.type || 'image/png',
                   title: data.title || '',
                   text: data.text || ''
                 }
+              }));
+            };
+            reader.onerror = function() {
+              // FileReader failed — fall back to text-only share
+              window.ReactNativeWebView.postMessage(JSON.stringify({
+                type: 'SHARE',
+                payload: { text: data.text || '', title: data.title || '' }
               }));
             };
             reader.readAsDataURL(file);
@@ -131,6 +140,30 @@ const injectedJavaScript = `
           return Promise.reject(err);
         }
       };
+
+      var _rnCanShareImpl = function() { return true; };
+
+      // Primary: Object.defineProperty creates an own property that shadows
+      // any non-writable prototype property (works in Chrome WebView standalone).
+      try {
+        Object.defineProperty(window.navigator, 'share', {
+          value: _rnShareImpl, writable: true, configurable: true
+        });
+      } catch (e) {
+        try { window.navigator.share = _rnShareImpl; } catch (e2) {
+          try { Navigator.prototype.share = _rnShareImpl; } catch (e3) {}
+        }
+      }
+
+      try {
+        Object.defineProperty(window.navigator, 'canShare', {
+          value: _rnCanShareImpl, writable: true, configurable: true
+        });
+      } catch (e) {
+        try { window.navigator.canShare = _rnCanShareImpl; } catch (e2) {
+          try { Navigator.prototype.canShare = _rnCanShareImpl; } catch (e3) {}
+        }
+      }
     }
 
     // ── Track Blob/File URLs so we can resolve them synchronously ─────
@@ -417,6 +450,7 @@ export default function App() {
   const canGoBackRef = useRef(false);
   const notificationReceivedListener = useRef(null);
   const notificationResponseListener = useRef(null);
+  const pendingTokensRef = useRef(null); // store tokens until WebView is ready
   const shimmerTranslate = useRef(new Animated.Value(-180)).current;
   const splashOpacity = useRef(new Animated.Value(1)).current;
   const [showSplash, setShowSplash] = useState(true);
@@ -779,6 +813,31 @@ export default function App() {
     };
   }, [shimmerTranslate, splashOpacity]);
 
+  const flushPendingTokens = () => {
+    const tokens = pendingTokensRef.current;
+    if (!tokens || !webViewRef.current) return;
+    const { expoPushToken, devicePushToken, devicePushTokenType } = tokens;
+
+    if (expoPushToken) {
+      webViewRef.current.postMessage(
+        JSON.stringify({ type: 'expoPushToken', token: expoPushToken })
+      );
+    }
+
+    if (devicePushToken) {
+      webViewRef.current.postMessage(
+        JSON.stringify({ type: 'devicePushToken', token: devicePushToken, tokenType: devicePushTokenType })
+      );
+      if (devicePushTokenType === 'fcm') {
+        webViewRef.current.postMessage(
+          JSON.stringify({ type: 'fcmToken', token: devicePushToken })
+        );
+      }
+    }
+
+    pendingTokensRef.current = null;
+  };
+
   useEffect(() => {
     if (Platform.OS === 'web') {
       return undefined;
@@ -803,34 +862,12 @@ export default function App() {
         console.log('Device Push Token:', devicePushTokenType, devicePushToken);
       }
 
+      // Store tokens — will be flushed once WebView is ready (onLoadEnd)
+      pendingTokensRef.current = { expoPushToken, devicePushToken, devicePushTokenType };
+
+      // If WebView is already loaded, send immediately
       if (webViewRef.current) {
-        if (expoPushToken) {
-          webViewRef.current.postMessage(
-            JSON.stringify({
-              type: 'expoPushToken',
-              token: expoPushToken,
-            })
-          );
-        }
-
-        if (devicePushToken) {
-          webViewRef.current.postMessage(
-            JSON.stringify({
-              type: 'devicePushToken',
-              token: devicePushToken,
-              tokenType: devicePushTokenType,
-            })
-          );
-
-          if (devicePushTokenType === 'fcm') {
-            webViewRef.current.postMessage(
-              JSON.stringify({
-                type: 'fcmToken',
-                token: devicePushToken,
-              })
-            );
-          }
-        }
+        flushPendingTokens();
       }
     });
 
@@ -943,6 +980,10 @@ export default function App() {
           }}
           onNavigationStateChange={(navState) => {
             canGoBackRef.current = navState.canGoBack;
+          }}
+          onLoadEnd={() => {
+            // WebView is ready — flush any push tokens collected before load
+            flushPendingTokens();
           }}
           injectedJavaScript={injectedJavaScript}
           onMessage={handleWebViewMessage}
