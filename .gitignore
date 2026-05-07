@@ -43,4 +43,10 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+<<<<<<< HEAD
 .env
+=======
+
+# Web app source (managed separately via Lovable)
+wevysyasocialhub-bb551b23-main/
+>>>>>>> abc5136 (fix: wa.me WebView intercept + WhatsApp share actual image + exclude web source folder)

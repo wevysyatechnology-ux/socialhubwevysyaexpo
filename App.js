@@ -28,6 +28,10 @@ if (Platform.OS !== 'web') {
 }
 
 const TARGET_URL = 'https://socialhub.wevysya.com';
+// Replace with your machine's local IP (run `ipconfig` on Windows to find it)
+// e.g. 'http://192.168.1.100:8080/'
+// Android emulator can also use: 'http://10.0.2.2:8080/'
+//const TARGET_URL = 'http://192.168.1.102:8080/';
 const logo = require('./assets/WeVysya Logo New Branding.png');
 
 Notifications.setNotificationHandler({
@@ -190,40 +194,20 @@ const injectedJavaScript = `
       }
 
       if (href.startsWith('http://') || href.startsWith('https://')) {
-        // Try in-WebView fetch first so same-site auth cookies are included.
-        fetch(href, { credentials: 'include' })
-          .then(function(res) { return res.blob(); })
-          .then(function(blob) {
-            var r = new FileReader();
-            r.onloadend = function() {
-              window.ReactNativeWebView.postMessage(JSON.stringify({
-                type: 'DOWNLOAD',
-                payload: { url: r.result, filename: filename }
-              }));
-            };
-            r.readAsDataURL(blob);
-          })
-          .catch(function() {
-            // Fallback for public URLs.
-            window.ReactNativeWebView.postMessage(JSON.stringify({
-              type: 'DOWNLOAD',
-              payload: { url: href, filename: filename }
-            }));
-          });
+        // Pass URL directly to native downloader — avoids freezing the
+        // WebView JS thread with a heavy in-browser fetch + base64 conversion.
+        // Native FileSystem.downloadAsync runs off the UI thread.
+        window.ReactNativeWebView.postMessage(JSON.stringify({
+          type: 'DOWNLOAD',
+          payload: { url: href, filename: filename, headers: { 'Cookie': document.cookie || '' } }
+        }));
         return;
       }
 
       // Regular URL — pass through to native downloader
-      var payload = { url: href, filename: filename };
-      if (href.startsWith('http://') || href.startsWith('https://')) {
-        payload.headers = {
-          Cookie: document.cookie || ''
-        };
-      }
-
       window.ReactNativeWebView.postMessage(JSON.stringify({
         type: 'DOWNLOAD',
-        payload: payload
+        payload: { url: href, filename: filename }
       }));
     }
 
@@ -631,6 +615,33 @@ export default function App() {
           } else {
             Alert.alert('Error', 'Sharing is not available on this device');
           }
+        } else if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
+          // URL share — download natively first, then open the native share sheet.
+          // This is the correct path for the WhatsApp button in the WebView app.
+          const shareFilename = 'flyer.png';
+          const shareFileUri = FileSystem.cacheDirectory + shareFilename;
+          try {
+            const { uri: downloadedUri } = await FileSystem.downloadAsync(url, shareFileUri);
+            if (await Sharing.isAvailableAsync()) {
+              try {
+                await Sharing.shareAsync(downloadedUri, {
+                  dialogTitle: title || 'Share Flyer',
+                  mimeType: 'image/png',
+                  UTI: 'public.image',
+                });
+              } catch (shareError) {
+                if (!isShareCancelledError(shareError)) {
+                  throw shareError;
+                }
+              }
+            } else {
+              Alert.alert('Error', 'Sharing is not available on this device');
+            }
+          } catch (downloadError) {
+            console.log('Share URL download failed', downloadError);
+            // Fallback: share the raw URL as text
+            await Share.share({ message: url, title: title || 'WeVysya Flyer' });
+          }
         } else {
           await Share.share({
             message: text ? (url ? `${text} ${url}` : text) : url,
@@ -655,11 +666,12 @@ export default function App() {
             encoding: FileSystem.EncodingType.Base64,
           });
         } else if (url) {
-          // URL was not converted to data: in-browser (e.g. long-press on img src).
+          // URL passed directly from WebView — download natively off the UI thread.
           // Use legacy FileSystem.downloadAsync which is stable on this RN version.
           fileUri = FileSystem.cacheDirectory + filename;
           try {
-            const downloadRes = await FileSystem.downloadAsync(url, fileUri);
+            const downloadOptions = (headers && Object.keys(headers).length > 0) ? { headers } : {};
+            const downloadRes = await FileSystem.downloadAsync(url, fileUri, downloadOptions);
             fileUri = downloadRes.uri;
           } catch (downloadError) {
             console.log('Direct download failed', downloadError);
@@ -910,6 +922,11 @@ export default function App() {
 
             const isHttp = reqUrl.startsWith('http://') || reqUrl.startsWith('https://');
             if (isHttp) {
+              // WhatsApp wa.me links must open in WhatsApp, not inside the WebView
+              if (reqUrl.includes('wa.me') || reqUrl.includes('api.whatsapp.com')) {
+                openExternallyOrShare(reqUrl);
+                return false;
+              }
               if (looksLikeDirectDownloadUrl(reqUrl)) {
                 saveHttpFileToDevice(reqUrl, getFilenameFromUrl(reqUrl, 'download.png'));
                 return false;

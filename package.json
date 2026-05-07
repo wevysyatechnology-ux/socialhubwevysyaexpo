@@ -29,7 +29,12 @@
   },
   "private": true,
   "devDependencies": {
+<<<<<<< HEAD
     "@vitejs/plugin-react": "^6.0.1",
     "vite": "^8.0.10"
+=======
+    "@types/react": "~19.1.10",
+    "typescript": "~5.9.2"
+>>>>>>> abc5136 (fix: wa.me WebView intercept + WhatsApp share actual image + exclude web source folder)
   }
 }
