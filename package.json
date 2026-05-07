@@ -22,19 +22,15 @@
     "expo-sharing": "~14.0.8",
     "expo-status-bar": "~3.0.9",
     "react": "19.1.0",
-    "react-dom": "^19.1.0",
-    "react-native": "0.81.5",
+    "react-dom": "^19.1.0",    "react-native": "0.81.5",
     "react-native-web": "^0.21.2",
     "react-native-webview": "13.15.0"
   },
   "private": true,
   "devDependencies": {
-<<<<<<< HEAD
-    "@vitejs/plugin-react": "^6.0.1",
-    "vite": "^8.0.10"
-=======
     "@types/react": "~19.1.10",
-    "typescript": "~5.9.2"
->>>>>>> abc5136 (fix: wa.me WebView intercept + WhatsApp share actual image + exclude web source folder)
+    "@vitejs/plugin-react": "^6.0.1",
+    "typescript": "~5.9.2",
+    "vite": "^8.0.10"
   }
 }
