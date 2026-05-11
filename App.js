@@ -451,6 +451,7 @@ export default function App() {
   const notificationReceivedListener = useRef(null);
   const notificationResponseListener = useRef(null);
   const pendingTokensRef = useRef(null); // store tokens until WebView is ready
+  const tokenFlushTimersRef = useRef([]); // retry timer IDs
   const shimmerTranslate = useRef(new Animated.Value(-180)).current;
   const splashOpacity = useRef(new Animated.Value(1)).current;
   const [showSplash, setShowSplash] = useState(true);
@@ -813,6 +814,10 @@ export default function App() {
     };
   }, [shimmerTranslate, splashOpacity]);
 
+  // Send tokens to the WebView via postMessage.
+  // Does NOT clear pendingTokensRef so that scheduled retries can resend.
+  // The web app uses upsert (onConflict: user_id,token) so duplicate sends
+  // are safe and idempotent.
   const flushPendingTokens = () => {
     const tokens = pendingTokensRef.current;
     if (!tokens || !webViewRef.current) return;
@@ -835,7 +840,33 @@ export default function App() {
       }
     }
 
-    pendingTokensRef.current = null;
+    // NOTE: intentionally NOT setting pendingTokensRef.current = null here.
+    // Tokens stay in the ref so retry flushes (scheduled below) can resend.
+  };
+
+  // Schedule retry flushes to handle two timing problems:
+  //   1. React's message listener in the WebView may not be registered yet
+  //      right after onLoadEnd — retries catch it once React mounts.
+  //   2. The web app's savePushToken returns early when user === null (not
+  //      logged in yet). Retries at 20s and 60s cover the time the user
+  //      spends on the login screen before authenticating.
+  // Safe to call multiple times — cancels any previously scheduled retries first.
+  const scheduleTokenFlushRetries = () => {
+    tokenFlushTimersRef.current.forEach(clearTimeout);
+    tokenFlushTimersRef.current = [];
+
+    const delays = [3000, 8000, 20000, 60000];
+    const timers = delays.map((delay, idx) =>
+      setTimeout(() => {
+        flushPendingTokens();
+        // After the last retry we can release the token from memory.
+        if (idx === delays.length - 1) {
+          pendingTokensRef.current = null;
+          tokenFlushTimersRef.current = [];
+        }
+      }, delay)
+    );
+    tokenFlushTimersRef.current = timers;
   };
 
   useEffect(() => {
@@ -862,12 +893,15 @@ export default function App() {
         console.log('Device Push Token:', devicePushTokenType, devicePushToken);
       }
 
-      // Store tokens — will be flushed once WebView is ready (onLoadEnd)
+      // Store tokens — will be flushed once WebView is ready (onLoadEnd).
+      // Tokens are kept in the ref (not cleared on flush) so retry attempts work.
       pendingTokensRef.current = { expoPushToken, devicePushToken, devicePushTokenType };
 
-      // If WebView is already loaded, send immediately
+      // If WebView is already loaded, send immediately and schedule retries.
+      // Retries cover: React mount timing gap + user login delay on web.
       if (webViewRef.current) {
         flushPendingTokens();
+        scheduleTokenFlushRetries();
       }
     });
 
@@ -906,6 +940,10 @@ export default function App() {
       });
 
     return () => {
+      // Cancel any scheduled token flush retries
+      tokenFlushTimersRef.current.forEach(clearTimeout);
+      tokenFlushTimersRef.current = [];
+
       if (notificationReceivedListener.current) {
         Notifications.removeNotificationSubscription(
           notificationReceivedListener.current
@@ -982,8 +1020,12 @@ export default function App() {
             canGoBackRef.current = navState.canGoBack;
           }}
           onLoadEnd={() => {
-            // WebView is ready — flush any push tokens collected before load
+            // Flush tokens immediately and schedule retries.
+            // Retries are needed because:
+            //   - React's message listener may not be registered yet at this exact moment
+            //   - The user may not be logged in yet (savePushToken returns early if user===null)
             flushPendingTokens();
+            scheduleTokenFlushRetries();
           }}
           injectedJavaScript={injectedJavaScript}
           onMessage={handleWebViewMessage}
