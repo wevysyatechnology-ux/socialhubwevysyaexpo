@@ -452,6 +452,7 @@ export default function App() {
   const notificationResponseListener = useRef(null);
   const pendingTokensRef = useRef(null); // store tokens until WebView is ready
   const tokenFlushTimersRef = useRef([]); // retry timer IDs
+  const tokenRequestedRef = useRef(false); // web app is authenticated and wants tokens
   const shimmerTranslate = useRef(new Animated.Value(-180)).current;
   const splashOpacity = useRef(new Animated.Value(1)).current;
   const [showSplash, setShowSplash] = useState(true);
@@ -624,6 +625,15 @@ export default function App() {
     }
 
     try {
+      // Web app is authenticated — flush tokens immediately.
+      // This is the primary delivery mechanism: web notifies native when user
+      // is logged in, so savePushToken() will succeed (user !== null).
+      if (data.type === 'requestPushTokens') {
+        tokenRequestedRef.current = true;
+        flushPendingTokens();
+        return;
+      }
+
       if (data.type === 'SHARE') {
         const { base64, url, text, title } = data.payload;
         if (base64) {
@@ -897,11 +907,17 @@ export default function App() {
       // Tokens are kept in the ref (not cleared on flush) so retry attempts work.
       pendingTokensRef.current = { expoPushToken, devicePushToken, devicePushTokenType };
 
-      // If WebView is already loaded, send immediately and schedule retries.
-      // Retries cover: React mount timing gap + user login delay on web.
       if (webViewRef.current) {
-        flushPendingTokens();
-        scheduleTokenFlushRetries();
+        // Web already requested tokens (user was already logged in) — flush immediately.
+        // This handles the case where tokens arrive AFTER the user is already authenticated.
+        if (tokenRequestedRef.current) {
+          flushPendingTokens();
+        } else {
+          // User not yet logged in — send optimistically and schedule retries
+          // until the web app sends requestPushTokens (user login event).
+          flushPendingTokens();
+          scheduleTokenFlushRetries();
+        }
       }
     });
 
