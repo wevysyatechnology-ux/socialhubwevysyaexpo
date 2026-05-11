@@ -453,9 +453,42 @@ export default function App() {
   const pendingTokensRef = useRef(null); // store tokens until WebView is ready
   const tokenFlushTimersRef = useRef([]); // retry timer IDs
   const tokenRequestedRef = useRef(false); // web app is authenticated and wants tokens
+  const authSessionRef = useRef(null); // { accessToken, userId, anonKey } from web after login
   const shimmerTranslate = useRef(new Animated.Value(-180)).current;
   const splashOpacity = useRef(new Animated.Value(1)).current;
   const [showSplash, setShowSplash] = useState(true);
+
+  // Save push token DIRECTLY to Supabase from native code.
+  // This bypasses the web app's savePushToken (which requires user !== null)
+  // entirely — the native side uses the authenticated session token the web
+  // app sends after login via the authSession message.
+  const savePushTokenDirect = async (accessToken, userId, anonKey, token, tokenType, platform) => {
+    if (!accessToken || !userId || !anonKey || !token) return;
+    try {
+      const res = await fetch(
+        'https://rmldqsvbopfvmmounvnx.supabase.co/rest/v1/user_push_tokens',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${accessToken}`,
+            'apikey': anonKey,
+            'Prefer': 'resolution=merge-duplicates,return=minimal',
+          },
+          body: JSON.stringify({
+            user_id: userId,
+            token,
+            token_type: tokenType,
+            platform,
+            updated_at: new Date().toISOString(),
+          }),
+        }
+      );
+      console.log('[Push] Token saved directly to Supabase:', tokenType, platform, res.status);
+    } catch (err) {
+      console.log('[Push] Direct token save failed:', err);
+    }
+  };
 
   const canOpenOutsideWebView = (url) => {
     if (!url || typeof url !== 'string') {
@@ -625,9 +658,33 @@ export default function App() {
     }
 
     try {
-      // Web app is authenticated — flush tokens immediately.
-      // This is the primary delivery mechanism: web notifies native when user
-      // is logged in, so savePushToken() will succeed (user !== null).
+      // Web app is authenticated — save tokens directly to Supabase from native.
+      // This is the most reliable path: native calls Supabase REST API directly
+      // using the authenticated session token, bypassing all web-side guards.
+      if (data.type === 'authSession') {
+        const { accessToken, userId, anonKey } = data;
+        if (accessToken && userId && anonKey) {
+          authSessionRef.current = { accessToken, userId, anonKey };
+          console.log('[Push] Auth session received, saving tokens directly');
+
+          const tokens = pendingTokensRef.current;
+          if (tokens) {
+            const { expoPushToken, devicePushToken, devicePushTokenType } = tokens;
+            const nativePlatform = Platform.OS === 'ios' ? 'ios' : 'android';
+
+            if (expoPushToken) {
+              savePushTokenDirect(accessToken, userId, anonKey, expoPushToken, 'expo', nativePlatform);
+            }
+            if (devicePushToken) {
+              const pType = devicePushTokenType === 'apns' ? 'ios' : 'android';
+              savePushTokenDirect(accessToken, userId, anonKey, devicePushToken, devicePushTokenType || 'fcm', pType);
+            }
+          }
+        }
+        return;
+      }
+
+      // Also flush via WebView message channel (legacy path — web saves token)
       if (data.type === 'requestPushTokens') {
         tokenRequestedRef.current = true;
         flushPendingTokens();
