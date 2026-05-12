@@ -30,6 +30,14 @@ if (Platform.OS !== 'web') {
 const TARGET_URL = 'https://socialhub.wevysya.com';
 // For local dev, comment the above and use your machine's IP:
 // const TARGET_URL = 'http://192.168.1.102:8080/';
+
+// expo-notifications getDevicePushTokenAsync() returns type 'android' on Android
+// and 'ios' on iOS — neither of which is the standard 'fcm'/'apns' used in the DB.
+function normalizeDevicePushTokenType(tokenType) {
+  if (tokenType === 'android') return 'fcm';
+  if (tokenType === 'ios') return 'apns';
+  return tokenType || 'fcm';
+}
 const logo = require('./assets/WeVysya Logo New Branding.png');
 
 Notifications.setNotificationHandler({
@@ -676,8 +684,9 @@ export default function App() {
               savePushTokenDirect(accessToken, userId, anonKey, expoPushToken, 'expo', nativePlatform);
             }
             if (devicePushToken) {
-              const pType = devicePushTokenType === 'apns' ? 'ios' : 'android';
-              savePushTokenDirect(accessToken, userId, anonKey, devicePushToken, devicePushTokenType || 'fcm', pType);
+              const normalizedType = normalizeDevicePushTokenType(devicePushTokenType);
+              const pType = normalizedType === 'apns' ? 'ios' : 'android';
+              savePushTokenDirect(accessToken, userId, anonKey, devicePushToken, normalizedType, pType);
             }
           }
         }
@@ -897,10 +906,11 @@ export default function App() {
     }
 
     if (devicePushToken) {
+      const normalizedType = normalizeDevicePushTokenType(devicePushTokenType);
       webViewRef.current.postMessage(
-        JSON.stringify({ type: 'devicePushToken', token: devicePushToken, tokenType: devicePushTokenType })
+        JSON.stringify({ type: 'devicePushToken', token: devicePushToken, tokenType: normalizedType })
       );
-      if (devicePushTokenType === 'fcm') {
+      if (normalizedType === 'fcm') {
         webViewRef.current.postMessage(
           JSON.stringify({ type: 'fcmToken', token: devicePushToken })
         );
