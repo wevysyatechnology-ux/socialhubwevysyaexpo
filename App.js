@@ -27,9 +27,9 @@ if (Platform.OS !== 'web') {
   WebView = require('react-native-webview').WebView;
 }
 
-const TARGET_URL = 'https://socialhub.wevysya.com';
-// For local dev, comment the above and use your machine's IP:
-// const TARGET_URL = 'http://192.168.1.102:8080/';
+const LIVE_URL = 'https://socialhub.wevysya.com';
+const LOCAL_DEV_URL = 'http://localhost:8080/';
+const TARGET_URL = 'https://socialhub.wevysya.com'; // switch to LIVE_URL for production
 
 // expo-notifications getDevicePushTokenAsync() returns type 'android' on Android
 // and 'ios' on iOS — neither of which is the standard 'fcm'/'apns' used in the DB.
@@ -367,6 +367,39 @@ const injectedJavaScript = `
       });
     }
 
+    function wait(ms) {
+      return new Promise(function(resolve) { setTimeout(resolve, ms); });
+    }
+
+    async function resolveDownloadHref(anchor, initialHref) {
+      var href = initialHref || '';
+      for (var i = 0; i < 8; i++) {
+        var currentHref = '';
+        try {
+          currentHref = anchor && (anchor.getAttribute('href') || anchor.href) || '';
+        } catch (e) {}
+
+        if (currentHref) {
+          href = currentHref;
+        }
+
+        if (!href) {
+          await wait(80);
+          continue;
+        }
+
+        // Blob URL base64 conversion can be slightly delayed after click.
+        if (href.startsWith('blob:') && !_blobMap[href] && i < 7) {
+          await wait(80);
+          continue;
+        }
+
+        break;
+      }
+
+      return href;
+    }
+
     // ── Intercept user clicks on <a download> ─────────────────────────
     // We do NOT intercept generic button clicks here — the website's own
     // click handlers must run so they can generate the blob/data URL for
@@ -378,8 +411,11 @@ const injectedJavaScript = `
         // Let site handlers complete (some builders reset zoom/state after click).
         // We only block browser navigation and trigger native download asynchronously.
         setTimeout(function() {
-          dispatchDownload(target.getAttribute('href'), target.getAttribute('download') || 'download.png');
-        }, 0);
+          resolveDownloadHref(target, target.getAttribute('href'))
+            .then(function(finalHref) {
+              dispatchDownload(finalHref, target.getAttribute('download') || 'download.png');
+            });
+        }, 40);
       }
     }, true);
 
@@ -389,11 +425,20 @@ const injectedJavaScript = `
     var _origAnchorClick = HTMLAnchorElement.prototype.click;
     HTMLAnchorElement.prototype.click = function() {
       if (this.hasAttribute('download')) {
-        var href = this.getAttribute('href');
+        var _this = this;
         var name = this.getAttribute('download') || 'download.png';
+
+        // Let inline click handlers mutate href first (common in flyer builders).
+        try {
+          _origAnchorClick.call(this);
+        } catch (e) {}
+
         setTimeout(function() {
-          dispatchDownload(href, name);
-        }, 0);
+          resolveDownloadHref(_this, _this.getAttribute('href'))
+            .then(function(finalHref) {
+              dispatchDownload(finalHref, name);
+            });
+        }, 40);
         return;
       }
       _origAnchorClick.call(this);
