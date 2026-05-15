@@ -37,6 +37,12 @@ yarn-error.*
 # Admin SDK private key must NEVER be committed
 *firebase-adminsdk*.json
 
+# Sensitive credentials — NEVER commit
+credentials.json
+credentials/
+deployment_cert.der
+google-services1.json
+
 # typescript
 *.tsbuildinfo
 
