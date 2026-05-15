@@ -1,0 +1,73 @@
+{
+  "expo": {
+    "name": "WeVysya Social Hub",
+    "slug": "wevysya-social-hub",
+    "owner": "wevysya",
+    "version": "1.0.5",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.wevysya.socialhub",
+      "infoPlist": {
+        "NSCameraUsageDescription": "WeVysya Social Hub needs camera access to let you upload photos and videos.",
+        "NSPhotoLibraryUsageDescription": "WeVysya Social Hub needs access to your photo library to let you upload images.",
+        "NSPhotoLibraryAddUsageDescription": "WeVysya Social Hub needs permission to save images to your photo library.",
+        "NSMicrophoneUsageDescription": "WeVysya Social Hub needs microphone access for video recording."
+      }
+    },
+    "android": {
+      "versionCode": 6,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true,
+      "package": "app.wevysyasocialhub.android",
+      "googleServicesFile": "./google-services.json",
+      "permissions": [
+        "android.permission.INTERNET",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "c7c2dea8-4597-4ce9-af65-ecb8763893aa"
+      }
+    },
+    "plugins": [
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow WeVysya Social Hub to access your photos.",
+          "savePhotosPermission": "Allow WeVysya Social Hub to save flyers to your gallery.",
+          "isAccessMediaLocationEnabled": false
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#7FFFD4",
+          "defaultChannel": "default"
+        }
+      ]
+    ]
+  }
+}

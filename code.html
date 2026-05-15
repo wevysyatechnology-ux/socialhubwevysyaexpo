@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>WeVysya Splash Screen</title>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#7FFFD4",
+                        "brand-deep": "#0A1F1A",
+                    },
+                    fontFamily: {
+                        "display": ["Plus Jakarta Sans", "sans-serif"]
+                    },
+                    borderRadius: {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                },
+            },
+        }
+    </script>
+<style>
+        body {
+            min-height: max(884px, 100dvh);
+        }
+        .radial-gradient-bg {
+            background: radial-gradient(circle at center, #11352c 0%, #0A1F1A 70%);
+        }
+        @keyframes pulse-soft {
+            0%, 100% { opacity: 0.4; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(1.05); }
+        }
+        .animate-pulse-soft {
+            animation: pulse-soft 4s ease-in-out infinite;
+        }
+    </style>
+</head>
+<body class="bg-brand-deep text-white font-display antialiased overflow-hidden">
+<div class="relative flex h-screen w-full flex-col items-center justify-between radial-gradient-bg overflow-hidden group/design-root">
+<!-- Decorative Background Rings & Geometry -->
+<div class="absolute inset-0 flex items-center justify-center pointer-events-none z-0">
+<!-- Concentric Rings suggesting connectivity -->
+<div class="w-[300px] h-[300px] rounded-full border border-primary/10 absolute animate-pulse-soft"></div>
+<div class="w-[450px] h-[450px] rounded-full border border-primary/5 absolute" style="animation-delay: 1s;"></div>
+<div class="w-[650px] h-[650px] rounded-full border border-primary/[0.03] absolute" style="animation-delay: 2s;"></div>
+<!-- Subtle Light Streaks -->
+<div class="absolute top-0 left-1/4 w-px h-64 bg-gradient-to-b from-transparent via-primary/10 to-transparent rotate-45"></div>
+<div class="absolute bottom-0 right-1/4 w-px h-64 bg-gradient-to-t from-transparent via-primary/10 to-transparent rotate-45"></div>
+</div>
+<!-- Top Spacer -->
+<div class="flex-1"></div>
+<!-- Main Content Area -->
+<div class="relative z-10 flex flex-col items-center justify-center w-full px-6">
+<!-- Logo Section -->
+<div class="relative flex flex-col items-center">
+<!-- Soft Mint Green Glow -->
+<div class="absolute inset-0 -m-12 bg-primary/15 blur-[80px] rounded-full animate-pulse-soft"></div>
+<!-- Logo Image Container -->
+<div class="relative w-44 h-44 flex items-center justify-center">
+<img alt="WeVysya logo" class="w-full h-full object-contain drop-shadow-[0_0_15px_rgba(127,255,212,0.3)]" src="https://lh3.googleusercontent.com/aida/ADBb0ui6a678LommqUJhFOJI3jAo6wBz-eYDi19GlETaO-7aDVBB6ObGQQhNbzAzQLaycb5FPXCWB05jzjqoOWHF6owJM5Fa_uNJ6LoWjzKj3Fz0IIujb5_iMSmNR0NRxRXm4tS6QdzKzbASIsm4kpPl8YL-mCAj4lP1-jtLyZpgYqek8Iens8D9GDu2OZ1KohkTEBQ8lo_z_2Ag7gU47wKEtC7u66A1Gan03X5oXbAX-RyaXLO47LV_HQAxcYTy0hTNXTrPdtxn7vxbEg"/>
+</div>
+<!-- Branding Typography -->
+<div class="mt-8 text-center space-y-2">
+<h1 class="text-white text-2xl font-semibold tracking-tight">WeVysya Social Hub</h1>
+<p class="text-primary/70 text-sm font-medium max-w-[240px] mx-auto leading-relaxed">
+                        Generate flyers &amp; manage our community presence
+                    </p>
+</div>
+</div>
+</div>
+<!-- Middle Spacer for breathing room -->
+<div class="flex-[0.5]"></div>
+<!-- Tagline Section -->
+<div class="relative z-10 text-center px-6 mb-12">
+<h2 class="text-white/90 tracking-wide text-2xl font-bold leading-tight">
+                Stop Thinking 'i',<br/>
+                Start Thinking <span class="text-primary drop-shadow-[0_0_8px_rgba(127,255,212,0.4)]">'WE'</span>
+</h2>
+</div>
+<!-- Bottom Footer / Loader Section -->
+<div class="w-full px-12 pb-16 z-10 flex flex-col items-center gap-6">
+<!-- Minimalist Loading Indicator -->
+<div class="w-full max-w-[160px] flex flex-col gap-3">
+<div class="rounded-full bg-white/5 h-1 w-full overflow-hidden">
+<div class="h-full rounded-full bg-primary w-[45%] shadow-[0_0_12px_#7FFFD4] animate-[shimmer_2s_infinite]"></div>
+</div>
+</div>
+<!-- Subtle Brand ID -->
+<p class="text-white/20 text-[10px] font-bold tracking-[0.3em] uppercase">Powered by WeVysya</p>
+</div>
+</div>
+<style>
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(250%); }
+        }
+    </style>
+</body></html>
