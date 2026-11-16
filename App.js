@@ -1104,6 +1104,10 @@ export default function App() {
           domStorageEnabled={true}
           useWebKit={true}
           setSupportMultipleWindows={false}
+          // Go Live: let the page use the camera and microphone (asks the member once)
+          mediaCapturePermissionGrantType="grant"
+          allowsInlineMediaPlayback={true}
+          mediaPlaybackRequiresUserAction={false}
           originWhitelist={['https://*', 'http://*']}
           allowFileAccessFromFileURLs={false}
           allowUniversalAccessFromFileURLs={false}
