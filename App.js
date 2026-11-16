@@ -1104,6 +1104,10 @@ export default function App() {
           domStorageEnabled={true}
           useWebKit={true}
           setSupportMultipleWindows={false}
+          // No pinch/double-tap zoom and no Android font scaling: the page is built for phones
+          setBuiltInZoomControls={false}
+          setDisplayZoomControls={false}
+          textZoom={100}
           // Go Live: let the page use the camera and microphone (asks the member once)
           mediaCapturePermissionGrantType="grant"
           allowsInlineMediaPlayback={true}
