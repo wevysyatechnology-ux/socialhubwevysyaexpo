@@ -619,7 +619,7 @@ export default function App() {
 
       let permStatus = 'undetermined';
       try {
-        const perm = await MediaLibrary.requestPermissionsAsync(false);
+        const perm = await MediaLibrary.requestPermissionsAsync(true);
         permStatus = perm?.status || 'undetermined';
       } catch (permError) {
         console.log('Media permission request failed', permError);
@@ -627,13 +627,9 @@ export default function App() {
 
       if (permStatus === 'granted') {
         try {
-          const asset = await MediaLibrary.createAssetAsync(downloadedUri);
-          const existingAlbum = await MediaLibrary.getAlbumAsync('WeVysya');
-          if (existingAlbum) {
-            await MediaLibrary.addAssetsToAlbumAsync([asset], existingAlbum, false);
-          } else {
-            await MediaLibrary.createAlbumAsync('WeVysya', asset, false);
-          }
+          // Save only (write-only access): the app never reads the gallery, so no photo/video
+          // read permission is needed (Google Play photo and video permissions policy).
+          await MediaLibrary.createAssetAsync(downloadedUri);
           Alert.alert('Saved!', 'Flyer saved to your gallery.');
           return;
         } catch (saveError) {
@@ -846,7 +842,7 @@ export default function App() {
         // ── Step 2: Request permission (correct API — no second arg) ─
         let permStatus = 'undetermined';
         try {
-          const perm = await MediaLibrary.requestPermissionsAsync(false);
+          const perm = await MediaLibrary.requestPermissionsAsync(true);
           permStatus = perm?.status || 'undetermined';
         } catch (permError) {
           console.log('Media permission request failed', permError);
@@ -856,13 +852,9 @@ export default function App() {
         // ── Step 3: Save to gallery if permission granted ────────────
         if (permStatus === 'granted') {
           try {
-            const asset = await MediaLibrary.createAssetAsync(fileUri);
-            const existingAlbum = await MediaLibrary.getAlbumAsync('WeVysya');
-            if (existingAlbum) {
-              await MediaLibrary.addAssetsToAlbumAsync([asset], existingAlbum, false);
-            } else {
-              await MediaLibrary.createAlbumAsync('WeVysya', asset, false);
-            }
+            // Save only (write-only access): the app never reads the gallery, so no photo/video
+            // read permission is needed (Google Play photo and video permissions policy).
+            await MediaLibrary.createAssetAsync(fileUri);
             Alert.alert('Saved!', 'Flyer saved to your gallery.');
             return;
           } catch (saveError) {
