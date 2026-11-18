@@ -20,6 +20,7 @@ import { StatusBar } from 'expo-status-bar';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as MediaLibrary from 'expo-media-library';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 
 // WebView is only available on native; web uses an iframe
 let WebView = null;
@@ -495,6 +496,9 @@ const injectedJavaScript = `
     }, true);
   })();
 
+  // This app keeps the screen on while the page is live (Go Live sends 'keepAwake').
+  window.__WV_KEEP_AWAKE = true;
+
   true;
 `;
 
@@ -707,6 +711,14 @@ export default function App() {
     }
 
     try {
+      // Go Live: keep the screen on while streaming. Android WebView has no Wake Lock API,
+      // and when the screen turns off the camera stops and the live ends.
+      if (data.type === 'keepAwake') {
+        if (data.on) activateKeepAwakeAsync('golive').catch(() => undefined);
+        else Promise.resolve(deactivateKeepAwake('golive')).catch(() => undefined);
+        return;
+      }
+
       // Web app is authenticated — save tokens directly to Supabase from native.
       // This is the most reliable path: native calls Supabase REST API directly
       // using the authenticated session token, bypassing all web-side guards.
@@ -1157,6 +1169,15 @@ export default function App() {
           }}
           injectedJavaScript={injectedJavaScript}
           onMessage={handleWebViewMessage}
+          // If Android stops the page (low memory, video driver crash), reload it instead of
+          // letting the whole app close.
+          onRenderProcessGone={() => {
+            Promise.resolve()
+              .then(() => deactivateKeepAwake('golive'))
+              .catch(() => undefined);
+            webViewRef.current?.reload();
+          }}
+          onContentProcessDidTerminate={() => webViewRef.current?.reload()}
         />
       )}
       {showSplash ? (
