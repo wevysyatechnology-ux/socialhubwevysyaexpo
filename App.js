@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import Constants from 'expo-constants';
@@ -505,6 +505,10 @@ const injectedJavaScript = `
 export default function App() {
   const webViewRef = useRef(null);
   const canGoBackRef = useRef(false);
+  // A long job in the web app (making a video or reel, uploading): if the member switches
+  // apps while it runs, a notification reminds them to come back so it can finish.
+  const longTaskRef = useRef({ on: false, label: '' });
+  const longTaskNoticeRef = useRef(null);
   const notificationReceivedListener = useRef(null);
   const notificationResponseListener = useRef(null);
   const pendingTokensRef = useRef(null); // store tokens until WebView is ready
@@ -716,6 +720,20 @@ export default function App() {
       if (data.type === 'keepAwake') {
         if (data.on) activateKeepAwakeAsync('golive').catch(() => undefined);
         else Promise.resolve(deactivateKeepAwake('golive')).catch(() => undefined);
+        return;
+      }
+
+      // A long job started or finished in the web app.
+      if (data.type === 'longTask') {
+        const wasOn = longTaskRef.current.on;
+        longTaskRef.current = { on: !!data.on, label: String(data.label || '') };
+        if (wasOn && !data.on && AppState.currentState !== 'active') {
+          // finished while the member was in another app
+          Notifications.scheduleNotificationAsync({
+            content: { title: 'Done', body: 'Your work in Social Hub has finished. Tap to see it.' },
+            trigger: null,
+          }).catch(() => undefined);
+        }
         return;
       }
 
@@ -994,6 +1012,34 @@ export default function App() {
     );
     tokenFlushTimersRef.current = timers;
   };
+
+  // Switched to another app while a long job runs: remind the member to come back.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        if (longTaskNoticeRef.current) {
+          Notifications.dismissNotificationAsync(longTaskNoticeRef.current).catch(() => undefined);
+          longTaskNoticeRef.current = null;
+        }
+        return;
+      }
+      if (state === 'background' && longTaskRef.current.on && !longTaskNoticeRef.current) {
+        const label = longTaskRef.current.label || 'Your work';
+        Notifications.scheduleNotificationAsync({
+          content: {
+            title: 'Please come back to Social Hub',
+            body: `${label} is still in progress. Tap here so it can finish. Closing the app will stop it.`,
+          },
+          trigger: null,
+        })
+          .then((id) => {
+            longTaskNoticeRef.current = id;
+          })
+          .catch(() => undefined);
+      }
+    });
+    return () => sub.remove();
+  }, []);
 
   useEffect(() => {
     if (Platform.OS === 'web') {
