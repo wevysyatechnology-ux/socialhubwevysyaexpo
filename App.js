@@ -483,6 +483,10 @@ const injectedJavaScript = `
         event.stopImmediatePropagation();
       }
 
+      // a long press already saved it via the timer: one press = one save
+      if (_longPressFired) return;
+      clearLongPress();
+      _longPressFired = true;
       var src = getElementVisualSource(visual) || getElementVisualSource(findBestFlyerElement());
       if (src) {
         dispatchDownload(src, 'flyer.png');
@@ -504,6 +508,8 @@ const injectedJavaScript = `
 
 export default function App() {
   const webViewRef = useRef(null);
+  const saveBusyRef = useRef(false);
+  const lastSaveRef = useRef({ key: '', at: 0 });
   const canGoBackRef = useRef(false);
   // A long job in the web app (making a video or reel, uploading): if the member switches
   // apps while it runs, a notification reminds them to come back so it can finish.
@@ -616,6 +622,16 @@ export default function App() {
     }
   };
 
+  // Tell the web app the file is in the gallery; it shows its own WeVysya "Saved" card
+  // (replaces the plain grey Android "Saved!" box).
+  const tellWebSaved = () => {
+    try {
+      webViewRef.current?.postMessage(JSON.stringify({ type: 'savedToGallery' }));
+    } catch (e) {
+      Alert.alert('Saved', 'Flyer saved to your gallery.');
+    }
+  };
+
   const saveHttpFileToDevice = async (url, preferredFilename) => {
     const filename = preferredFilename || getFilenameFromUrl(url, 'download.png');
     const fileUri = FileSystem.cacheDirectory + filename;
@@ -638,7 +654,7 @@ export default function App() {
           // Save only (write-only access): the app never reads the gallery, so no photo/video
           // read permission is needed (Google Play photo and video permissions policy).
           await MediaLibrary.createAssetAsync(downloadedUri);
-          Alert.alert('Saved!', 'Flyer saved to your gallery.');
+          tellWebSaved();
           return;
         } catch (saveError) {
           console.log('Gallery save failed, falling back to share sheet', saveError);
@@ -834,6 +850,16 @@ export default function App() {
         const { url, filename: rawFilename, headers } = data.payload || {};
         const filename = rawFilename || 'download.png';
 
+        // One tap = one copy in the gallery. Ignore a second request while a save is running,
+        // and the same file again within 8 seconds (long press, double tap, two listeners).
+        const fingerprint = `${filename}|${(url || '').length}|${(url || '').slice(-64)}`;
+        const now = Date.now();
+        if (saveBusyRef.current) return;
+        if (lastSaveRef.current.key === fingerprint && now - lastSaveRef.current.at < 8000) return;
+        lastSaveRef.current = { key: fingerprint, at: now };
+        saveBusyRef.current = true;
+        try {
+
         // ── Step 1: Write file to cache ──────────────────────────────
         let fileUri = '';
         let mimeType = 'image/png';
@@ -885,7 +911,7 @@ export default function App() {
             // Save only (write-only access): the app never reads the gallery, so no photo/video
             // read permission is needed (Google Play photo and video permissions policy).
             await MediaLibrary.createAssetAsync(fileUri);
-            Alert.alert('Saved!', 'Flyer saved to your gallery.');
+            tellWebSaved();
             return;
           } catch (saveError) {
             console.log('Gallery save failed, falling back to share sheet', saveError);
@@ -907,6 +933,9 @@ export default function App() {
           }
         } else {
           Alert.alert('Error', 'Could not save the flyer. Please grant Photos permission in device Settings and try again.');
+        }
+        } finally {
+          saveBusyRef.current = false;
         }
       }
     } catch (e) {
