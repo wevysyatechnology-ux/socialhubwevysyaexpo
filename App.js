@@ -733,6 +733,15 @@ export default function App() {
     try {
       // Go Live: keep the screen on while streaming. Android WebView has no Wake Lock API,
       // and when the screen turns off the camera stops and the live ends.
+      // The web app's "Update now" could not get past an old saved copy: wipe the WebView cache.
+      if (data.type === 'hardReload') {
+        try {
+          webViewRef.current?.clearCache?.(true);
+        } catch (e) {
+          console.log('clearCache failed', e);
+        }
+        return;
+      }
       if (data.type === 'keepAwake') {
         if (data.on) activateKeepAwakeAsync('golive').catch(() => undefined);
         else Promise.resolve(deactivateKeepAwake('golive')).catch(() => undefined);
